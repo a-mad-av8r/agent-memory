@@ -1,0 +1,22 @@
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1a1a2e', 'primaryTextColor': '#fff', 'lineColor': '#a78bfa', 'actorTextColor': '#fff', 'actorBkg': '#7c3aed', 'actorBorder': '#a78bfa', 'activationBkgColor': '#2d1b69', 'activationBorderColor': '#a78bfa', 'signalColor': '#a78bfa', 'signalTextColor': '#fff'}}}%%
+sequenceDiagram
+    participant A as 🤖 Agent<br/>(phoenix)
+    participant R as 🔴 Redis<br/>(Hot Cache)
+    participant P as 🟠 PostgreSQL<br/>(pgvector)
+
+    Note over A: Session starts
+    A->>R: GET roster, sprints, recent events
+    R-->>A: ⚡ ~0.1ms — cached state
+
+    A->>P: SELECT decisions WHERE age < 7 days
+    P-->>A: Recent architectural decisions
+
+    A->>P: SELECT lessons WHERE age < 14 days
+    P-->>A: Learned patterns & gotchas
+
+    A->>P: SELECT tasks WHERE assigned = 'phoenix'
+    P-->>A: Current work items
+
+    A->>P: INSERT agent_sessions (log this start)
+
+    Note over A: ✅ Full context loaded<br/>Under 2 seconds

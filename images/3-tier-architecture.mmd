@@ -1,0 +1,22 @@
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1a1a2e', 'primaryTextColor': '#fff', 'primaryBorderColor': '#7c3aed', 'lineColor': '#a78bfa', 'secondaryColor': '#16213e', 'tertiaryColor': '#0f3460'}}}%%
+graph TD
+    A["🤖 Agent Session<br/><i>cortex-bootstrap → full context in &lt;2s</i>"]
+
+    B["🔴 Tier 1: Redis — Hot<br/>7 days · ~0.1ms queries<br/>Agent roster, sprints, recent events"]
+
+    C["🟠 Tier 2: pgvector — Warm<br/>90-365 days · ~5ms queries<br/>Semantic search: decisions, lessons,<br/>knowledge, chat history"]
+
+    D["🔵 Tier 3: SQL Archive — Cold<br/>Forever · ~50ms queries<br/>Full-text search only, no embeddings"]
+
+    A -->|"Session Start"| B
+    B -->|"Ages out after 7 days"| C
+    C -->|"Ages out after 90 days"| D
+
+    B -.->|"Sub-ms lookup"| A
+    C -.->|"Semantic search"| A
+    D -.->|"Full-text search"| A
+
+    style A fill:#7c3aed,stroke:#a78bfa,stroke-width:2px,color:#fff
+    style B fill:#dc2626,stroke:#f87171,stroke-width:2px,color:#fff
+    style C fill:#ea580c,stroke:#fb923c,stroke-width:2px,color:#fff
+    style D fill:#2563eb,stroke:#60a5fa,stroke-width:2px,color:#fff

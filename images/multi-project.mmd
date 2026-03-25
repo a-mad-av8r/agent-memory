@@ -1,0 +1,36 @@
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1a1a2e', 'primaryTextColor': '#fff', 'lineColor': '#a78bfa'}}}%%
+graph LR
+    subgraph Containers["🐳 Shared Containers"]
+        R["🔴 Redis<br/>mem-redis"]
+        P["🟠 PostgreSQL<br/>mem-postgres + pgvector"]
+    end
+
+    subgraph P1["Project: airport-ops"]
+        A1["🤖 phoenix"]
+        A2["🤖 keith"]
+    end
+
+    subgraph P2["Project: billing-api"]
+        A3["🤖 phoenix"]
+        A4["🤖 marvin"]
+    end
+
+    subgraph P3["Project: tam-platform"]
+        A5["🤖 phoenix"]
+        A6["🤖 sophia"]
+        A7["🤖 keith"]
+    end
+
+    P1 -->|"airport-ops:*"| R
+    P1 -->|"WHERE project='airport-ops'"| P
+    P2 -->|"billing-api:*"| R
+    P2 -->|"WHERE project='billing-api'"| P
+    P3 -->|"tam-platform:*"| R
+    P3 -->|"WHERE project='tam-platform'"| P
+
+    style R fill:#dc2626,stroke:#f87171,stroke-width:2px,color:#fff
+    style P fill:#ea580c,stroke:#fb923c,stroke-width:2px,color:#fff
+    style P1 fill:#1e1b4b,stroke:#7c3aed,stroke-width:2px,color:#fff
+    style P2 fill:#1e1b4b,stroke:#7c3aed,stroke-width:2px,color:#fff
+    style P3 fill:#1e1b4b,stroke:#7c3aed,stroke-width:2px,color:#fff
+    style Containers fill:#0f172a,stroke:#60a5fa,stroke-width:2px,color:#fff
