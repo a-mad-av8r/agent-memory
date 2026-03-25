@@ -19,7 +19,7 @@ Every AI coding session starts cold. No memory of yesterday's decisions. No reca
 
 The context window can hold a lot — but it can't hold a month of work. And file-based memory (markdown files in a `.memory/` folder) doesn't scale. You can't ask a markdown file *"what did we decide about the auth architecture?"* and get a meaningful answer.
 
-I built Agent Memory to solve this. It's the memory layer I run across 6 projects at [TAM Platform](https://github.com/a-mad-av8r), where multiple AI agents collaborate on airport management software.
+I built Agent Memory to solve this. It's the memory layer I run across 6 projects at (https://github.com/a-mad-av8r), where multiple AI agents collaborate on airport management software.
 
 ## The Architecture
 
