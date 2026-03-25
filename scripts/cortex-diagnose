@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# cortex-diagnose — verify Agent Memory environment connectivity
+# Usage: cortex-diagnose
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Source shared library
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_cortex_lib.sh
+source "${SCRIPT_DIR}/_cortex_lib.sh"
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    echo "Usage: cortex-diagnose"
+    echo ""
+    echo "Check environment connectivity: containers, PostgreSQL, Redis, schema, streams."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Colours
+# ---------------------------------------------------------------------------
+
+GREEN='\033[32m'
+RED='\033[31m'
+YELLOW='\033[33m'
+NC='\033[0m'
+
+ok()   { printf "${GREEN}✓${NC} %s\n" "$1"; }
+fail() { printf "${RED}✗${NC} %s\n" "$1"; }
+warn() { printf "${YELLOW}!${NC} %s\n" "$1"; }
+
+ERRORS=0
+
+printf '\n## Agent Memory — Diagnostics\n'
+printf 'Project: %s\n\n' "${CORTEX_PROJECT}"
+
+# ---------------------------------------------------------------------------
+# Container runtime
+# ---------------------------------------------------------------------------
+
+printf '### Runtime\n'
+if [ "${RUNTIME}" != "none" ]; then
+    ok "Container runtime: ${RUNTIME}"
+else
+    fail "No container runtime found (podman or docker)"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Redis
+# ---------------------------------------------------------------------------
+
+printf '\n### Redis\n'
+
+# Container check
+if [ "${RUNTIME}" != "none" ]; then
+    if "${RUNTIME}" ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
+        ok "Container '${REDIS_CONTAINER}' running"
+    else
+        fail "Container '${REDIS_CONTAINER}' not running"
+        ERRORS=$((ERRORS + 1))
+    fi
+fi
+
+# Connectivity
+if redis_available 2>/dev/null; then
+    ok "Redis responding on port ${REDIS_PORT}"
+else
+    fail "Redis not responding on port ${REDIS_PORT}"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# Stream
+if command -v redis-cli >/dev/null 2>&1; then
+    STREAM_LEN=$(rcli XLEN "${CORTEX_STREAM}" 2>/dev/null || echo "ERROR")
+    if [ "${STREAM_LEN}" != "ERROR" ]; then
+        ok "Stream '${CORTEX_STREAM}' exists (${STREAM_LEN} entries)"
+    else
+        warn "Stream '${CORTEX_STREAM}' not found (will be created on first use)"
+    fi
+
+    # Consumer group
+    GROUP_INFO=$(rcli XINFO GROUPS "${CORTEX_STREAM}" 2>/dev/null || echo "")
+    if echo "${GROUP_INFO}" | grep -q "${CORTEX_GROUP}"; then
+        ok "Consumer group '${CORTEX_GROUP}' exists"
+    else
+        warn "Consumer group '${CORTEX_GROUP}' not found (will be created on first use)"
+    fi
+else
+    warn "redis-cli not installed — cannot check stream details"
+fi
+
+# ---------------------------------------------------------------------------
+# PostgreSQL
+# ---------------------------------------------------------------------------
+
+printf '\n### PostgreSQL\n'
+
+# Container check
+if [ "${RUNTIME}" != "none" ]; then
+    if "${RUNTIME}" ps --format '{{.Names}}' 2>/dev/null | grep -q "^${PG_CONTAINER}$"; then
+        ok "Container '${PG_CONTAINER}' running"
+    else
+        fail "Container '${PG_CONTAINER}' not running"
+        ERRORS=$((ERRORS + 1))
+    fi
+fi
+
+# Connectivity
+if pg_available 2>/dev/null; then
+    ok "PostgreSQL responding (db: ${PG_DB})"
+else
+    fail "PostgreSQL not responding (db: ${PG_DB}, port: ${PG_PORT})"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# Table count
+TABLE_COUNT=$(pg_query "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'" 2>/dev/null || echo "0")
+TABLE_COUNT=$(printf '%s' "${TABLE_COUNT}" | tr -d '[:space:]')
+
+if [ "${TABLE_COUNT}" -ge 10 ] 2>/dev/null; then
+    ok "Schema: ${TABLE_COUNT} tables"
+else
+    fail "Schema: expected ≥10 tables, found ${TABLE_COUNT}"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# pgvector extension
+PGVECTOR=$(pg_query "SELECT 1 FROM pg_extension WHERE extname = 'vector'" 2>/dev/null || echo "")
+PGVECTOR=$(printf '%s' "${PGVECTOR}" | tr -d '[:space:]')
+if [ "${PGVECTOR}" = "1" ]; then
+    ok "pgvector extension installed"
+else
+    fail "pgvector extension missing"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# Agent count
+AGENT_COUNT=$(pg_query "SELECT count(*) FROM agents WHERE project = '${CORTEX_PROJECT}'" 2>/dev/null || echo "0")
+AGENT_COUNT=$(printf '%s' "${AGENT_COUNT}" | tr -d '[:space:]')
+ok "Registered agents: ${AGENT_COUNT}"
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+printf '\n### Result\n'
+if [ "${ERRORS}" -eq 0 ]; then
+    ok "All checks passed"
+else
+    fail "${ERRORS} check(s) failed"
+fi
+printf '\n'
+
+exit "${ERRORS}"

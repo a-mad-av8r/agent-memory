@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# cortex-roster — show registered agents for the current project
+# Usage: cortex-roster
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Source shared library
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_cortex_lib.sh
+source "${SCRIPT_DIR}/_cortex_lib.sh"
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    echo "Usage: cortex-roster"
+    echo ""
+    echo "Show registered agents and their current status."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+
+printf '\n## Agent Roster — %s\n\n' "${CORTEX_PROJECT}"
+
+# ---------------------------------------------------------------------------
+# Roster — Redis first, fallback to PG
+# ---------------------------------------------------------------------------
+
+ROSTER_SHOWN=0
+
+if redis_available 2>/dev/null; then
+    redis_data=$(prcli HGETALL "agents:state:roster" 2>/dev/null) || redis_data=""
+    if [ -n "${redis_data}" ]; then
+        printf '%s\n' "${redis_data}"
+        ROSTER_SHOWN=1
+    fi
+fi
+
+if [ "${ROSTER_SHOWN}" -eq 0 ]; then
+    project_sql=$(sql_escape "${CORTEX_PROJECT}")
+
+    rows=$(pg_query "
+        SELECT name, role, model
+          FROM agents
+         WHERE project = '${project_sql}'
+         ORDER BY name
+    " 2>/dev/null) || rows=""
+
+    if [ -n "${rows}" ]; then
+        printf '%-16s  %-20s  %-30s\n' "Name" "Role" "Model"
+        printf '%-16s  %-20s  %-30s\n' "----------------" "--------------------" "------------------------------"
+        while IFS='|' read -r name role model; do
+            printf '%-16s  %-20s  %-30s\n' "${name}" "${role}" "${model}"
+        done <<< "${rows}"
+        printf '\n'
+    else
+        printf '(no agents registered for project: %s)\n\n' "${CORTEX_PROJECT}"
+    fi
+fi

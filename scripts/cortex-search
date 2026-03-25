@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# cortex-search — full-text search across cortex memory tables
+# Usage: cortex-search <query> [--type knowledge|decisions|lessons|events|messages]
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Source shared library
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_cortex_lib.sh
+source "${SCRIPT_DIR}/_cortex_lib.sh"
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+
+usage() {
+    printf 'Usage:\n'
+    printf '  cortex-search <query>\n'
+    printf '  cortex-search <query> --type knowledge|decisions|lessons|events|messages\n'
+    printf '\nSearches all tables by default. Use --type to narrow to a specific table.\n'
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+QUERY="$1"
+shift
+
+SEARCH_TYPE="all"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --type)
+            if [ $# -lt 2 ]; then
+                printf 'ERROR: --type requires a value\n' >&2
+                usage
+            fi
+            SEARCH_TYPE="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            ;;
+        *)
+            printf 'ERROR: Unknown flag: %s\n' "$1" >&2
+            usage
+            ;;
+    esac
+done
+
+# Validate type
+case "${SEARCH_TYPE}" in
+    all|knowledge|decisions|lessons|events|messages) ;;
+    *)
+        printf 'ERROR: Invalid type "%s". Must be: knowledge, decisions, lessons, events, messages\n' \
+            "${SEARCH_TYPE}" >&2
+        exit 1
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+
+printf '\n## Cortex Search: "%s" (type: %s)\n' "${QUERY}" "${SEARCH_TYPE}"
+
+# ---------------------------------------------------------------------------
+# search_table — query one table and print results if non-empty
+#
+# Usage: search_table <table> <search_col> <display_cols> <label>
+#
+# <display_cols> is a comma-separated SQL expression list used in SELECT.
+# Results are printed under a ### <label> section header only when non-empty.
+# ---------------------------------------------------------------------------
+
+project_sql=$(sql_escape "${CORTEX_PROJECT}")
+query_sql=$(sql_escape "${QUERY}")
+
+search_table() {
+    local table="$1"
+    local search_col="$2"
+    local display_cols="$3"
+    local label="$4"
+    local project_filter="AND (project = '${project_sql}' OR project IS NULL)"
+
+    if [ $# -ge 5 ]; then
+        project_filter="$5"
+    fi
+
+    local rows
+    rows=$(pg_query "
+        SELECT ${display_cols}
+          FROM ${table}
+         WHERE ${search_col} ILIKE '%${query_sql}%'
+           ${project_filter}
+         LIMIT 10
+    " 2>/dev/null) || rows=""
+
+    if [ -n "${rows}" ]; then
+        printf '\n### %s\n\n' "${label}"
+        while IFS='|' read -r col1 col2 col3; do
+            printf '  %s\n' "${col1}"
+            if [ -n "${col2}" ]; then
+                printf '    -> %s' "${col2}"
+                [ -n "${col3}" ] && printf '  [%s]' "${col3}"
+                printf '\n'
+            fi
+        done <<< "${rows}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Execute search
+# ---------------------------------------------------------------------------
+
+case "${SEARCH_TYPE}" in
+
+    # -----------------------------------------------------------------------
+    all)
+        search_table "knowledge" \
+            "content" \
+            "LEFT(content, 120), source_file, category" \
+            "Knowledge" \
+            ""
+
+        search_table "decisions" \
+            "summary" \
+            "summary, category, agent_name" \
+            "Decisions"
+
+        search_table "lessons" \
+            "summary" \
+            "summary, category, agent_name" \
+            "Lessons"
+
+        search_table "team_events" \
+            "summary" \
+            "summary, agent_name, event_type" \
+            "Events"
+
+        search_table "messages" \
+            "content" \
+            "LEFT(content, 120), agent_name, role" \
+            "Messages"
+        ;;
+
+    # -----------------------------------------------------------------------
+    knowledge)
+        search_table "knowledge" \
+            "content" \
+            "LEFT(content, 120), source_file, category" \
+            "Knowledge" \
+            ""
+        ;;
+
+    decisions)
+        search_table "decisions" \
+            "summary" \
+            "summary, category, agent_name" \
+            "Decisions"
+        ;;
+
+    lessons)
+        search_table "lessons" \
+            "summary" \
+            "summary, category, agent_name" \
+            "Lessons"
+        ;;
+
+    events)
+        search_table "team_events" \
+            "summary" \
+            "summary, agent_name, event_type" \
+            "Events"
+        ;;
+
+    messages)
+        search_table "messages" \
+            "content" \
+            "LEFT(content, 120), agent_name, role" \
+            "Messages"
+        ;;
+
+esac
+
+printf '\n'

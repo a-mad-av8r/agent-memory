@@ -9,6 +9,8 @@
 [![Works with: Codex](https://img.shields.io/badge/Works%20with-Codex-green)]()
 [![Works with: Gemini CLI](https://img.shields.io/badge/Works%20with-Gemini%20CLI-blue)]()
 
+📖 **New to this?** Check out the [Step-by-Step Setup Guide](GUIDE.md) — written for humans who want to get running in 10 minutes.
+
 ---
 
 ## The Problem
@@ -17,7 +19,7 @@ Every AI coding session starts cold. No memory of yesterday's decisions. No reca
 
 The context window can hold a lot — but it can't hold a month of work. And file-based memory (markdown files in a `.memory/` folder) doesn't scale. You can't ask a markdown file *"what did we decide about the auth architecture?"* and get a meaningful answer.
 
-I built Agent Memory to solve this. It's the memory layer I run across 6 projects at [TAM Platform](https://github.com/amadmalik), where multiple AI agents collaborate on airport management software.
+I built Agent Memory to solve this. It's the memory layer I run across 6 projects at [TAM Platform](https://github.com/a-mad-av8r), where multiple AI agents collaborate on airport management software.
 
 ## The Architecture
 
@@ -56,7 +58,7 @@ graph TD
 
 ```bash
 # Clone
-git clone https://github.com/amadmalik/agent-memory.git
+git clone https://github.com/a-mad-av8r/agent-memory.git
 cd agent-memory
 
 # Setup — starts Redis + PostgreSQL containers, creates DB, applies schema
@@ -296,17 +298,17 @@ CORTEX_PROJECT=billing-api bash scripts/cortex-bootstrap phoenix
 
 ## Part of Agent Cortex
 
-Agent Memory is **Piece 1** of [Agent Cortex](https://github.com/amadmalik/agent-cortex) — a complete multi-agent collaboration system. Each piece works standalone.
+Agent Memory is **Piece 1** of [Agent Cortex](https://github.com/a-mad-av8r/agent-cortex) — a complete multi-agent collaboration system. Each piece works standalone.
 
-| Piece | Repo | What It Does |
-|-------|------|-------------|
-| **1. Memory** | **You are here** | Persistent 3-tier memory |
-| 2. Telepathic Link | [agent-telepathy](https://github.com/amadmalik/agent-telepathy) | Shared awareness via Redis Streams |
-| 3. Handoffs | [agent-handoffs](https://github.com/amadmalik/agent-handoffs) | Structured work transfers |
-| 4. Roles | [agent-roles](https://github.com/amadmalik/agent-roles) | Domain boundaries and steering |
-| 5. Retention | [agent-retention](https://github.com/amadmalik/agent-retention) | Data lifecycle management |
-| 6. Multi-Tool | [agent-multimodel](https://github.com/amadmalik/agent-multimodel) | Cross-tool agent teams |
-| 7. Full Cortex | [agent-cortex](https://github.com/amadmalik/agent-cortex) | Everything assembled |
+| Piece | Repo | What It Does | Status |
+|-------|------|-------------|--------|
+| **1. Memory** | **You are here** | Persistent 3-tier memory | ✅ Live |
+| 2. Telepathic Link | [agent-telepathy](https://github.com/a-mad-av8r/agent-telepathy) | Shared awareness via Redis Streams | 🔜 Coming Soon |
+| 3. Handoffs | [agent-handoffs](https://github.com/a-mad-av8r/agent-handoffs) | Structured work transfers | 🔜 Coming Soon |
+| 4. Roles | [agent-roles](https://github.com/a-mad-av8r/agent-roles) | Domain boundaries and steering | 🔜 Coming Soon |
+| 5. Retention | [agent-retention](https://github.com/a-mad-av8r/agent-retention) | Data lifecycle management | 🔜 Coming Soon |
+| 6. Multi-Tool | [agent-multimodel](https://github.com/a-mad-av8r/agent-multimodel) | Cross-tool agent teams | 🔜 Coming Soon |
+| 7. Full Cortex | [agent-cortex](https://github.com/a-mad-av8r/agent-cortex) | Everything assembled | 🔜 Coming Soon |
 
 ## Lessons From Production
 
@@ -326,7 +328,7 @@ MIT. Use it, modify it, sell it, whatever. Just don't blame me if your agent rem
 
 **Amad Malik** — CTO at Atos, Chief AI Officer at Adaptech AI. I build multi-agent AI systems for aviation. Agent Cortex is what happens when you run 4+ AI agents on the same codebase and get tired of them forgetting everything.
 
-[LinkedIn](https://www.linkedin.com/in/amadmalik/) · [GitHub](https://github.com/amadmalik) · [The AIr Mobility Show](https://www.youtube.com/@TheAIrMobilityShow)
+[LinkedIn](https://www.linkedin.com/in/amadmalik/) · [GitHub](https://github.com/a-mad-av8r) · [The AIr Mobility Show](https://www.youtube.com/@TheAIrMobilityShow)
 
 ---
 

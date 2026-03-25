@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# cortex-log — dual-write an agent event to PostgreSQL + Redis Stream
+# Usage: cortex-log <agent_name> <event_type> <summary> [files...]
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Source shared library
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_cortex_lib.sh
+source "${SCRIPT_DIR}/_cortex_lib.sh"
+
+# ---------------------------------------------------------------------------
+# Valid event types
+# ---------------------------------------------------------------------------
+
+VALID_TYPES="commit decision lesson started stopped blocked unblocked bug handoff question"
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+
+usage() {
+    printf 'Usage: cortex-log <agent_name> <event_type> <summary> [files...]\n\n'
+    printf 'Valid event types:\n'
+    printf '  %s\n' "${VALID_TYPES}"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Argument validation
+# ---------------------------------------------------------------------------
+
+if [ "$#" -lt 1 ] || [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    usage
+fi
+
+if [ "$#" -lt 3 ]; then
+    usage
+fi
+
+AGENT_NAME="$1"
+EVENT_TYPE="$2"
+SUMMARY="$3"
+shift 3
+
+# Validate event_type
+if ! echo "${VALID_TYPES}" | grep -qw "${EVENT_TYPE}"; then
+    printf 'ERROR: Invalid event type "%s"\n\n' "${EVENT_TYPE}" >&2
+    printf 'Valid event types: %s\n' "${VALID_TYPES}" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Build PostgreSQL ARRAY literal from remaining file args
+# ---------------------------------------------------------------------------
+
+if [ "$#" -gt 0 ]; then
+    FILES_SQL="ARRAY["
+    first=1
+    for f in "$@"; do
+        escaped_f=$(sql_escape "${f}")
+        if [ "${first}" -eq 1 ]; then
+            FILES_SQL="${FILES_SQL}'${escaped_f}'"
+            first=0
+        else
+            FILES_SQL="${FILES_SQL},'${escaped_f}'"
+        fi
+    done
+    FILES_SQL="${FILES_SQL}]"
+else
+    FILES_SQL="NULL"
+fi
+
+# ---------------------------------------------------------------------------
+# Escape user inputs for SQL
+# ---------------------------------------------------------------------------
+
+AGENT_SQL=$(sql_escape "${AGENT_NAME}")
+SUMMARY_SQL=$(sql_escape "${SUMMARY}")
+PROJECT_SQL=$(sql_escape "${CORTEX_PROJECT}")
+
+# ---------------------------------------------------------------------------
+# INSERT into PostgreSQL
+# ---------------------------------------------------------------------------
+
+pg_exec "INSERT INTO team_events (agent_name, event_type, summary, files, project, ts)
+         VALUES (
+             '${AGENT_SQL}',
+             '${EVENT_TYPE}',
+             '${SUMMARY_SQL}',
+             ${FILES_SQL},
+             '${PROJECT_SQL}',
+             NOW()
+         );" >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# Publish to Redis Stream
+# ---------------------------------------------------------------------------
+
+cortex_publish "${EVENT_TYPE}" "${AGENT_NAME}" "${SUMMARY}" "${CORTEX_PROJECT}"
+
+# ---------------------------------------------------------------------------
+# Confirm
+# ---------------------------------------------------------------------------
+
+status green "Logged: [${EVENT_TYPE}] ${AGENT_NAME} — ${SUMMARY}"

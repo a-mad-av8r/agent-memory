@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+# cortex-bootstrap — Agent Cortex session start script
+# Pulls full team context from Redis Streams + PostgreSQL.
+# Runs on every agent session start.
+#
+# Usage: cortex-bootstrap <agent_name>
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Source shared library
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_cortex_lib.sh
+source "${SCRIPT_DIR}/_cortex_lib.sh"
+
+# ---------------------------------------------------------------------------
+# Argument validation
+# ---------------------------------------------------------------------------
+
+if [ $# -lt 1 ] || [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    echo "Usage: cortex-bootstrap <agent_name>"
+    echo ""
+    echo "Session start — pulls full team context from Redis Streams + PostgreSQL."
+    echo ""
+    echo "Example: cortex-bootstrap phoenix"
+    [ $# -ge 1 ] && exit 0 || exit 1
+fi
+
+AGENT_NAME="$1"
+AGENT_ESCAPED="$(sql_escape "${AGENT_NAME}")"
+PROJECT_ESCAPED="$(sql_escape "${CORTEX_PROJECT}")"
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "# Agent Cortex — Context for ${AGENT_NAME}"
+echo "Generated: $(date '+%Y-%m-%d %H:%M:%S') | Project: ${CORTEX_PROJECT}"
+echo ""
+
+# ---------------------------------------------------------------------------
+# 1. Live Events (Redis Streams)
+# ---------------------------------------------------------------------------
+
+echo "## Live Events"
+echo ""
+
+if redis_available; then
+    # Ensure stream + consumer group exist (idempotent)
+    cortex_ensure_stream
+
+    # Read undelivered messages for this consumer
+    raw_events="$(cortex_catchup "${AGENT_NAME}" 2>/dev/null || true)"
+
+    if [ -n "${raw_events}" ] && [ "${raw_events}" != "(nil)" ]; then
+        echo "${raw_events}" | while IFS= read -r line; do
+            echo "${line}"
+            # Auto-ACK message IDs (pattern: digits-digits, e.g. 1711234567890-0)
+            if [[ "${line}" =~ ^[0-9]+-[0-9]+$ ]]; then
+                cortex_ack "${line}" 2>/dev/null || true
+            fi
+        done
+    else
+        echo "(No unacknowledged events)"
+    fi
+else
+    echo "(Unavailable — Redis not reachable)"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 2. Team Roster (Redis → PG fallback)
+# ---------------------------------------------------------------------------
+
+echo "## Team Roster"
+echo ""
+
+roster_shown=0
+
+if redis_available; then
+    roster_data="$(prcli HGETALL "agents:state:roster" 2>/dev/null || true)"
+    if [ -n "${roster_data}" ] && [ "${roster_data}" != "(nil)" ]; then
+        printf "%-15s  %s\n" "Agent" "State"
+        printf "%-15s  %s\n" "---------------" "--------------------"
+        # HGETALL returns alternating field / value lines
+        field=""
+        while IFS= read -r item; do
+            if [ -z "${field}" ]; then
+                field="${item}"
+            else
+                printf "%-15s  %s\n" "${field}" "${item}"
+                field=""
+            fi
+        done <<< "${roster_data}"
+        roster_shown=1
+    fi
+fi
+
+if [ "${roster_shown}" -eq 0 ]; then
+    # PG fallback
+    pg_roster="$(pg_query "SELECT name, role, model FROM agents WHERE project = '${PROJECT_ESCAPED}' ORDER BY name" 2>/dev/null || true)"
+    if [ -n "${pg_roster}" ]; then
+        printf "%-15s | %-20s | %-20s\n" "Name" "Role" "Model"
+        printf "%-15s-+-%-20s-+-%-20s\n" "---------------" "--------------------" "--------------------"
+        while IFS='|' read -r name role model; do
+            printf "%-15s | %-20s | %-20s\n" "${name}" "${role}" "${model}"
+        done <<< "${pg_roster}"
+    else
+        echo "(No data)"
+    fi
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 3. Active Sprints (Redis → PG fallback)
+# ---------------------------------------------------------------------------
+
+echo "## Active Sprints"
+echo ""
+
+sprint_shown=0
+
+if redis_available; then
+    sprint_data="$(prcli HGETALL "agents:state:sprints" 2>/dev/null || true)"
+    if [ -n "${sprint_data}" ] && [ "${sprint_data}" != "(nil)" ]; then
+        field=""
+        while IFS= read -r item; do
+            if [ -z "${field}" ]; then
+                field="${item}"
+            else
+                printf "Sprint %-4s  %s\n" "${field}" "${item}"
+                field=""
+            fi
+        done <<< "${sprint_data}"
+        sprint_shown=1
+    fi
+fi
+
+if [ "${sprint_shown}" -eq 0 ]; then
+    # PG fallback
+    pg_sprints="$(pg_query "SELECT sprint_number, goal, status FROM sprints WHERE status = 'active' AND project = '${PROJECT_ESCAPED}' ORDER BY sprint_number" 2>/dev/null || true)"
+    if [ -n "${pg_sprints}" ]; then
+        printf "%-8s | %-50s | %-10s\n" "Sprint" "Goal" "Status"
+        printf "%-8s-+-%-50s-+-%-10s\n" "--------" "--------------------------------------------------" "----------"
+        while IFS='|' read -r sprint_number goal sprint_status; do
+            printf "%-8s | %-50s | %-10s\n" "${sprint_number}" "${goal}" "${sprint_status}"
+        done <<< "${pg_sprints}"
+    else
+        echo "(No data)"
+    fi
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 4. Pending Handoffs (PG)
+# ---------------------------------------------------------------------------
+
+echo "## Pending Handoffs"
+echo ""
+
+handoff_sql="SELECT id, from_agent, priority, summary, created_at::date
+             FROM handoffs
+             WHERE to_role IN (SELECT role FROM agents WHERE name = '${AGENT_ESCAPED}')
+               AND status = 'pending'
+               AND project = '${PROJECT_ESCAPED}'
+             ORDER BY priority"
+
+handoffs="$(pg_query "${handoff_sql}" 2>/dev/null || true)"
+
+if [ -n "${handoffs}" ]; then
+    printf "%-6s | %-12s | %-8s | %-50s | %-12s\n" "ID" "From" "Priority" "Summary" "Date"
+    printf "%-6s-+-%-12s-+-%-8s-+-%-50s-+-%-12s\n" "------" "------------" "--------" "--------------------------------------------------" "------------"
+    while IFS='|' read -r hid from_agent priority summary hdate; do
+        printf "%-6s | %-12s | %-8s | %-50s | %-12s\n" \
+            "${hid}" "${from_agent}" "${priority}" "${summary}" "${hdate}"
+    done <<< "${handoffs}"
+    echo ""
+    echo "  Claim: cortex-handoff --claim <id>"
+else
+    echo "(No data)"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 5. Your Tasks (PG)
+# ---------------------------------------------------------------------------
+
+echo "## Your Tasks"
+echo ""
+
+task_sql="SELECT id, title, status, priority
+          FROM tasks
+          WHERE (assigned_agent = '${AGENT_ESCAPED}'
+                 OR assigned_role IN (SELECT role FROM agents WHERE name = '${AGENT_ESCAPED}'))
+            AND status != 'done'
+            AND project = '${PROJECT_ESCAPED}'
+          ORDER BY priority DESC"
+
+tasks="$(pg_query "${task_sql}" 2>/dev/null || true)"
+
+if [ -n "${tasks}" ]; then
+    printf "%-6s | %-50s | %-12s | %-8s\n" "ID" "Title" "Status" "Priority"
+    printf "%-6s-+-%-50s-+-%-12s-+-%-8s\n" "------" "--------------------------------------------------" "------------" "--------"
+    while IFS='|' read -r tid title tstatus tpriority; do
+        printf "%-6s | %-50s | %-12s | %-8s\n" "${tid}" "${title}" "${tstatus}" "${tpriority}"
+    done <<< "${tasks}"
+else
+    echo "(No data)"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 6. Recent Decisions (PG, last 7 days)
+# ---------------------------------------------------------------------------
+
+echo "## Recent Decisions (last 7 days)"
+echo ""
+
+decision_sql="SELECT agent_name, category, summary
+              FROM decisions
+              WHERE project = '${PROJECT_ESCAPED}'
+                AND created_at >= NOW() - INTERVAL '7 days'
+              ORDER BY created_at DESC"
+
+decisions="$(pg_query "${decision_sql}" 2>/dev/null || true)"
+
+if [ -n "${decisions}" ]; then
+    printf "%-15s | %-15s | %s\n" "Agent" "Category" "Summary"
+    printf "%-15s-+-%-15s-+-%s\n" "---------------" "---------------" "--------------------------------------------"
+    while IFS='|' read -r dagent dcategory dsummary; do
+        printf "%-15s | %-15s | %s\n" "${dagent}" "${dcategory}" "${dsummary}"
+    done <<< "${decisions}"
+else
+    echo "(No data)"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 7. Recent Lessons (PG, last 14 days)
+# ---------------------------------------------------------------------------
+
+echo "## Recent Lessons (last 14 days)"
+echo ""
+
+lesson_sql="SELECT agent_name, category, summary
+            FROM lessons
+            WHERE project = '${PROJECT_ESCAPED}'
+              AND created_at >= NOW() - INTERVAL '14 days'
+            ORDER BY created_at DESC"
+
+lessons="$(pg_query "${lesson_sql}" 2>/dev/null || true)"
+
+if [ -n "${lessons}" ]; then
+    printf "%-15s | %-15s | %s\n" "Agent" "Category" "Summary"
+    printf "%-15s-+-%-15s-+-%s\n" "---------------" "---------------" "--------------------------------------------"
+    while IFS='|' read -r lagent lcategory lsummary; do
+        printf "%-15s | %-15s | %s\n" "${lagent}" "${lcategory}" "${lsummary}"
+    done <<< "${lessons}"
+else
+    echo "(No data)"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 8. Recent Team Activity (PG team_events, last 3 days)
+# ---------------------------------------------------------------------------
+
+echo "## Recent Team Activity (last 3 days)"
+echo ""
+
+activity_sql="SELECT to_char(ts, 'YYYY-MM-DD HH24:MI'), agent_name, event_type, summary
+              FROM team_events
+              WHERE project = '${PROJECT_ESCAPED}'
+                AND ts >= NOW() - INTERVAL '3 days'
+              ORDER BY ts DESC
+              LIMIT 15"
+
+activity="$(pg_query "${activity_sql}" 2>/dev/null || true)"
+
+if [ -n "${activity}" ]; then
+    printf "%-16s | %-12s | %-12s | %s\n" "Timestamp" "Agent" "Type" "Summary"
+    printf "%-16s-+-%-12s-+-%-12s-+-%s\n" "----------------" "------------" "------------" "--------------------------------------------"
+    while IFS='|' read -r ats aagent atype asummary; do
+        printf "%-16s | %-12s | %-12s | %s\n" "${ats}" "${aagent}" "${atype}" "${asummary}"
+    done <<< "${activity}"
+else
+    echo "(No data)"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 9. Log session start
+# ---------------------------------------------------------------------------
+
+# Insert into team_events
+session_summary="Session started by ${AGENT_NAME}"
+session_sql="INSERT INTO team_events (agent_name, event_type, summary, project, ts)
+             VALUES ('${AGENT_ESCAPED}', 'session_start', '${session_summary}', '${PROJECT_ESCAPED}', NOW())"
+pg_exec "${session_sql}" 2>/dev/null || true
+
+# Publish to Redis stream
+cortex_publish "started" "${AGENT_NAME}" "${session_summary}" "${CORTEX_PROJECT}" >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+# Footer
+# ---------------------------------------------------------------------------
+
+status green "Cortex bootstrap complete. You are ${AGENT_NAME} on project ${CORTEX_PROJECT}."

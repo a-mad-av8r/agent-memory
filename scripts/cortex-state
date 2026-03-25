@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# cortex-state — show current sprint and project summary counts
+# Usage: cortex-state
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Source shared library
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_cortex_lib.sh
+source "${SCRIPT_DIR}/_cortex_lib.sh"
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    echo "Usage: cortex-state"
+    echo ""
+    echo "Show active sprints and summary counts (tasks, handoffs, events)."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+
+printf '\n## Agent Cortex State — %s\n' "${CORTEX_PROJECT}"
+
+# ---------------------------------------------------------------------------
+# Sprints — Redis first, fallback to PG
+# ---------------------------------------------------------------------------
+
+printf '\n### Sprints\n\n'
+
+project_sql=$(sql_escape "${CORTEX_PROJECT}")
+
+SPRINT_SHOWN=0
+
+if redis_available 2>/dev/null; then
+    redis_data=$(prcli HGETALL "agents:state:sprints" 2>/dev/null) || redis_data=""
+    if [ -n "${redis_data}" ]; then
+        printf '%s\n' "${redis_data}"
+        SPRINT_SHOWN=1
+    fi
+fi
+
+if [ "${SPRINT_SHOWN}" -eq 0 ]; then
+    rows=$(pg_query "
+        SELECT sprint_number, goal, status
+          FROM sprints
+         WHERE status = 'active'
+           AND project = '${project_sql}'
+         ORDER BY sprint_number
+    " 2>/dev/null) || rows=""
+
+    if [ -n "${rows}" ]; then
+        printf '%-8s  %-50s  %-12s\n' "Sprint" "Goal" "Status"
+        printf '%-8s  %-50s  %-12s\n' "--------" "--------------------------------------------------" "------------"
+        while IFS='|' read -r sprint_number goal sprint_status; do
+            # Truncate goal for display
+            if [ ${#goal} -gt 50 ]; then
+                goal="${goal:0:47}..."
+            fi
+            printf '%-8s  %-50s  %-12s\n' "${sprint_number}" "${goal}" "${sprint_status}"
+        done <<< "${rows}"
+    else
+        printf '(no active sprints)\n'
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Summary — three counts from PG
+# ---------------------------------------------------------------------------
+
+printf '\n### Summary\n\n'
+
+active_tasks=$(pg_query "
+    SELECT COUNT(*)
+      FROM tasks
+     WHERE project = '${project_sql}'
+       AND status != 'done'
+" 2>/dev/null || true)
+active_tasks=$(printf '%s' "${active_tasks}" | tr -d '[:space:]')
+
+pending_handoffs=$(pg_query "
+    SELECT COUNT(*)
+      FROM handoffs
+     WHERE project = '${project_sql}'
+       AND status = 'pending'
+" 2>/dev/null || true)
+pending_handoffs=$(printf '%s' "${pending_handoffs}" | tr -d '[:space:]')
+
+events_24h=$(pg_query "
+    SELECT COUNT(*)
+      FROM team_events
+     WHERE project = '${project_sql}'
+       AND ts > now() - interval '24 hours'
+" 2>/dev/null || true)
+events_24h=$(printf '%s' "${events_24h}" | tr -d '[:space:]')
+
+printf 'Active tasks:     %s\n' "${active_tasks:-0}"
+printf 'Pending handoffs: %s\n' "${pending_handoffs:-0}"
+printf 'Events (24h):     %s\n' "${events_24h:-0}"
+printf '\n'

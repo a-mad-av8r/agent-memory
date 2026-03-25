@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# cortex-history — display recent agent message history
+# Usage: cortex-history [--agent <name>] [--last <n>] [--since <date>]
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Source shared library
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_cortex_lib.sh
+source "${SCRIPT_DIR}/_cortex_lib.sh"
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+
+usage() {
+    printf 'Usage:\n'
+    printf '  cortex-history\n'
+    printf '  cortex-history [--agent <name>] [--last <n>] [--since <date>]\n'
+    printf '\nDefaults: last 20 messages for the current project.\n'
+    printf '\nExamples:\n'
+    printf '  cortex-history --agent sophia\n'
+    printf '  cortex-history --last 50\n'
+    printf '  cortex-history --since 2025-01-01\n'
+    printf '  cortex-history --agent phoenix --last 10 --since 2025-03-01\n'
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+AGENT_ARG=""
+LAST=20
+SINCE_ARG=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --agent)
+            if [ $# -lt 2 ]; then
+                printf 'ERROR: --agent requires a name\n' >&2
+                usage
+            fi
+            AGENT_ARG="$2"
+            shift 2
+            ;;
+        --last)
+            if [ $# -lt 2 ]; then
+                printf 'ERROR: --last requires a number\n' >&2
+                usage
+            fi
+            if ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -lt 1 ]; then
+                printf 'ERROR: --last must be a positive integer\n' >&2
+                exit 1
+            fi
+            LAST="$2"
+            shift 2
+            ;;
+        --since)
+            if [ $# -lt 2 ]; then
+                printf 'ERROR: --since requires a date (YYYY-MM-DD)\n' >&2
+                usage
+            fi
+            SINCE_ARG="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            ;;
+        *)
+            printf 'ERROR: Unknown flag: %s\n' "$1" >&2
+            usage
+            ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Build WHERE clause
+# ---------------------------------------------------------------------------
+
+project_sql=$(sql_escape "${CORTEX_PROJECT}")
+
+WHERE="project = '${project_sql}'"
+
+if [ -n "${AGENT_ARG}" ]; then
+    agent_sql=$(sql_escape "${AGENT_ARG}")
+    WHERE="${WHERE} AND agent_name = '${agent_sql}'"
+fi
+
+if [ -n "${SINCE_ARG}" ]; then
+    since_sql=$(sql_escape "${SINCE_ARG}")
+    WHERE="${WHERE} AND ts >= '${since_sql}'"
+fi
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+
+printf '\n## Message History — %s' "${CORTEX_PROJECT}"
+[ -n "${AGENT_ARG}" ] && printf ' / agent: %s' "${AGENT_ARG}"
+[ -n "${SINCE_ARG}" ] && printf ' / since: %s' "${SINCE_ARG}"
+printf '  (last %d)\n\n' "${LAST}"
+
+# ---------------------------------------------------------------------------
+# Query and display
+# ---------------------------------------------------------------------------
+
+rows=$(pg_query "
+    SELECT to_char(ts, 'MM-DD HH24:MI'),
+           agent_name,
+           role,
+           LEFT(content, 120)
+      FROM messages
+     WHERE ${WHERE}
+     ORDER BY ts DESC
+     LIMIT ${LAST}
+" 2>/dev/null) || rows=""
+
+if [ -z "${rows}" ]; then
+    printf '(no messages found)\n\n'
+    exit 0
+fi
+
+# Print table header
+printf '%-14s  %-14s  %-10s  %s\n' "When" "Agent" "Role" "Content"
+printf '%-14s  %-14s  %-10s  %s\n' \
+    "--------------" \
+    "--------------" \
+    "----------" \
+    "--------------------------------------------------------"
+
+row_count=0
+while IFS='|' read -r when agent role content; do
+    # Truncate content for display
+    if [ ${#content} -gt 80 ]; then
+        content="${content:0:77}..."
+    fi
+    printf '%-14s  %-14s  %-10s  %s\n' "${when}" "${agent}" "${role}" "${content}"
+    row_count=$(( row_count + 1 ))
+done <<< "${rows}"
+
+printf '\n%d message(s)\n\n' "${row_count}"
