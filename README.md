@@ -326,7 +326,7 @@ MIT. Use it, modify it, sell it, whatever. Just don't blame me if your agent rem
 
 ## Author
 
-**Amad Malik** — CTO at Atos, Chief AI Officer at Adaptech AI. I build multi-agent AI systems for aviation. Agent Cortex is what happens when you run 4+ AI agents on the same codebase and get tired of them forgetting everything.
+**Amad Malik** — CTO & Chief AI Officer at Atos. I build multi-agent AI systems for aviation. Agent Cortex is what happens when you run 4+ AI agents on the same codebase and get tired of them forgetting everything.
 
 [LinkedIn](https://www.linkedin.com/in/amadmalik/) · [GitHub](https://github.com/a-mad-av8r) · [The AIr Mobility Show](https://www.youtube.com/@TheAIrMobilityShow)
 
