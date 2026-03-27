@@ -2,7 +2,7 @@
 
 **Persistent 3-tier memory for AI coding agents — Redis, pgvector, SQL archive**
 
-> Your AI coding agent forgets everything between sessions. Every decision, every lesson, every architectural choice — gone. Agent Memory fixes that.
+> Your AI coding agent forgets everything between sessions. Every decision, every lesson, every conversation — gone. Agent Memory fixes that with a 3-tier persistent memory system and an orchestrator that automatically processes every session into structured, searchable intelligence.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Works with: Claude Code](https://img.shields.io/badge/Works%20with-Claude%20Code-orange)]()
@@ -17,7 +17,13 @@ Every AI coding session starts cold. No memory of yesterday's decisions. No reca
 
 The context window can hold a lot — but it can't hold a month of work. And file-based memory (markdown files in a `.memory/` folder) doesn't scale. You can't ask a markdown file *"what did we decide about the auth architecture?"* and get a meaningful answer.
 
-I built Agent Memory to solve this. It's the memory layer I run across 6 projects at [EnGenAI](https://github.com/a-mad-av8r), where multiple AI agents collaborate on airport management software.
+But the deeper problem is worse: **every conversation your agent had is lost**. The full reasoning, the approaches tried, the dead ends explored, the moment of insight — all of it disappears when the session ends. Manually logging a one-line event summary captures a fraction of that.
+
+Agent Memory solves both layers:
+- **Explicit memory** — agents manually log decisions, lessons, and events via `cortex-log`
+- **Implicit memory** — full session conversations are automatically captured and processed by PROMI (the orchestrator) into structured, searchable intelligence
+
+I built this system across 6 projects at [EnGenAI](https://github.com/a-mad-av8r), where multiple AI agents collaborate on airport management software. After 3 months, the agents keep getting smarter — not because we trained them, but because they remember everything.
 
 ## The Architecture
 
@@ -118,29 +124,50 @@ sequenceDiagram
 ```
 agent-memory/
 ├── README.md
-├── LICENSE                     (MIT)
-├── setup.sh                    One-shot setup script
-├── schema.sql                  Memory tables:
-│                                 knowledge, messages, decisions, lessons,
-│                                 agent_sessions, agents, sprints,
-│                                 archive_messages, archive_decisions,
-│                                 archive_lessons, retention_config
+├── LICENSE                       (MIT)
+├── setup.sh                      One-shot setup script
+├── schema.sql                    All 16 tables: active + archive + retention config
+├── templates/
+│   ├── AGENTS.md                 Universal protocol template (all tools read this)
+│   ├── CLAUDE.md                 Claude Code overlay
+│   ├── GEMINI.md                 Gemini CLI overlay
+│   └── role-profile.md           Agent role profile template
 ├── scripts/
-│   ├── _cortex_lib.sh          Shared library (project config, container detection)
-│   ├── cortex-bootstrap        Session start — loads full team context
-│   ├── cortex-search           Semantic search across all memory
-│   ├── cortex-history          Chat history query
-│   ├── cortex-state            Sprint + summary display
-│   ├── cortex-roster           Agent roster
-│   └── cortex-diagnose         Environment health check
+│   ├── _cortex_lib.sh            Shared library: runtime detection, Redis/PG routing,
+│   │                              project scoping, graceful fallback
+│   │
+│   ├── — SESSION LIFECYCLE —
+│   ├── cortex-bootstrap          Session START — loads full team context (<2s)
+│   ├── cortex-ingest-session     Session END — captures full conversation to DB
+│   │                              (auto-detects Claude Code / Codex JSONL format)
+│   │
+│   ├── — MEMORY & SEARCH —
+│   ├── cortex-search             Semantic + full-text search across all memory
+│   ├── cortex-history            Chat history query with filters
+│   ├── cortex-ingest-memories    Import markdown memory files to DB
+│   ├── cortex-migrate            One-time migration: file-based → DB
+│   │
+│   ├── — COLLABORATION —
+│   ├── cortex-log                Dual-write events to Redis Stream + PostgreSQL
+│   ├── cortex-board              Task board (--mine, --sprint, --add, --update)
+│   ├── cortex-handoff            Create / claim / complete handoffs between agents
+│   │
+│   ├── — STATE & STATUS —
+│   ├── cortex-state              Active sprints + summary counts
+│   ├── cortex-roster             Agent registry
+│   │
+│   ├── — MAINTENANCE —
+│   ├── cortex-retain             Move aged data to archive (--dry-run, --status)
+│   └── cortex-diagnose           Health check (containers, DB, schema, streams)
 ├── examples/
-│   ├── single-agent-memory.md  Using memory with one agent
-│   └── team-memory.md          Sharing memory across agents
+│   ├── single-agent-memory.md   Using memory with one agent
+│   └── team-memory.md           Sharing memory across agents
 ├── skills/
-│   └── agent-memory.md         Drop-in Claude Code skill
+│   └── agent-memory.md          Drop-in Claude Code skill
 └── docs/
-    ├── schema-reference.md     Table-by-table documentation
-    └── configuration.md        All env vars and config options
+    ├── schema-reference.md      Table-by-table documentation
+    ├── promi-setup.md            PROMI orchestrator configuration
+    └── configuration.md         All env vars and config options
 ```
 
 ## Deep Dive: The Cortex Middleware Layer
@@ -501,16 +528,141 @@ Fields:
 
 **Consumer group:** `cortex-agents` — each agent is a consumer with its own read cursor. When Phoenix calls `XREADGROUP GROUP cortex-agents phoenix`, it gets only the events it hasn't acknowledged yet.
 
+## Agent Bootstrap Protocol
+
+Every agent session follows 3 mandatory steps — in order:
+
+```
+Step 1: Read AGENTS.md
+        Universal project protocol. Works in all tools (Claude Code, Codex, Gemini CLI).
+        Kept under 32KB for Codex compatibility. Contains: project overview, team roster,
+        active sprint, domain boundaries summary, and key cortex commands.
+
+Step 2: Read .agents/roles/<your-role>.md
+        Your domain boundaries:
+          OWNS: files and systems you are responsible for
+          READS: files you can read but not modify
+          MUST-NOT-TOUCH: strict boundaries (another agent's domain)
+        Also contains: creativity/compliance/autonomy parameters, escalation rules.
+
+Step 3: Run cortex-bootstrap <your-name>
+        Pulls live team context: roster, sprints, your tasks, pending handoffs,
+        recent decisions, recent lessons, recent activity, unread events.
+        Auto-logs session start for other agents to see.
+```
+
+**Why AGENTS.md matters:** It is the universal protocol that every tool reads — Claude Code, Codex, Gemini CLI, Cursor, Copilot. No tool-specific onboarding. One source of truth.
+
+## Memory Architecture: Two Layers
+
+Agent Memory has two distinct layers working together. Most agent memory systems only have one.
+
+### Explicit Layer: What Agents Consciously Log
+Agents use `cortex-log` to record events as they happen — decisions, lessons, bugs, commits, handoffs. These are short, intentional summaries (one sentence). Fast to produce, fast to consume.
+
+### LTM Layer: What Gets Captured Automatically
+At the end of every session, the full conversation is ingested via `cortex-ingest-session`. Not a summary — the entire exchange. This is processed by **PROMI**, the orchestrator agent.
+
+**PROMI's processing pipeline:**
+
+```
+cortex-ingest-session <file> <agent>
+        │
+        ▼
+  Auto-detect format
+  (Claude Code JSONL or Codex JSONL)
+        │
+        ▼
+  Parse human/agent/system messages
+  Tag with metadata: sprint, phase, topic,
+  provider, model, worktree, branch, handoff_id
+        │
+        ▼
+  INSERT → messages table (PostgreSQL)
+        │
+        ▼
+  PROMI reads the ingested conversation
+        │
+        ├── EXTRACT: decisions, lessons, bugs
+        │   → Inserts into team_events, decisions, lessons tables
+        │
+        ├── EMBED: generate 2048-dim pgvector embeddings
+        │   → Enables semantic search: "what did we decide about billing?"
+        │
+        ├── CACHE: 500-token context summary → Redis (24h TTL)
+        │   → "What has Phoenix been working on?" — sub-millisecond answer
+        │
+        └── INJECT: feeds context into next agent session
+            → via --append-system-prompt (Claude Code)
+            → via initial prompt injection (Codex)
+```
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1a1a2e', 'primaryTextColor': '#fff', 'lineColor': '#a78bfa'}}}%%
+graph TD
+    subgraph SESSION["🤖 Agent Session"]
+        S1["Session Start<br/>cortex-bootstrap"]
+        S2["Session Work<br/>cortex-log (explicit events)"]
+        S3["Session End<br/>cortex-ingest-session"]
+    end
+
+    subgraph PROMI["🧠 PROMI (Orchestrator)"]
+        P1["Extract<br/>decisions · lessons · bugs"]
+        P2["Embed<br/>2048-dim pgvector"]
+        P3["Cache<br/>Redis 24h summary"]
+        P4["Inject<br/>next agent context"]
+    end
+
+    subgraph STORAGE["💾 Memory"]
+        R["Redis (Hot)"]
+        PG["PostgreSQL + pgvector (Warm)"]
+        AR["SQL Archive (Cold)"]
+    end
+
+    S1 -->|"XREADGROUP + SELECT"| R
+    S1 -->|"SELECT decisions/lessons/tasks"| PG
+    S2 -->|"XADD + INSERT"| R
+    S2 -->|"INSERT team_events"| PG
+    S3 -->|"INSERT messages"| PG
+    PG --> P1
+    P1 --> P2
+    P2 --> PG
+    P2 --> P3
+    P3 --> R
+    P4 -.->|"--append-system-prompt"| S1
+
+    style SESSION fill:#1e1b4b,stroke:#7c3aed,stroke-width:2px,color:#fff
+    style PROMI fill:#0f172a,stroke:#22c55e,stroke-width:2px,color:#fff
+    style STORAGE fill:#0f172a,stroke:#60a5fa,stroke-width:2px,color:#fff
+```
+
+The result: every agent session adds to a growing pool of structured intelligence. After 3 months, your agents don't just remember — they learn.
+
+### Memory Prohibition Rule
+
+**Do not use tool-specific memory features.** This is mandatory.
+
+| Tool | Feature to Avoid | Why |
+|------|-----------------|-----|
+| Claude Code | `~/.claude/projects/` auto-memory | Fragments state outside cortex — other tools can't see it |
+| Gemini CLI | `/memory add` | Same problem — isolated to one tool |
+| Cursor | Built-in memory | Same problem |
+| Any tool | Local markdown memory files | Doesn't survive multi-agent access, no semantic search |
+
+**All state goes through cortex-* CLI or direct SQL.** One database. All tools. All agents. Complete picture.
+
 ## Configuration
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
+| Variable | Default | Notes |
+|----------|---------|-------|
 | `CORTEX_PROJECT` | `myproject` | Project namespace for DB + Redis isolation |
-| `CORTEX_PG_PORT` | `5432` | PostgreSQL port |
-| `CORTEX_REDIS_PORT` | `6379` | Redis port |
+| `CORTEX_PG_PORT` | `5499` | Non-default — avoids conflicts with system PostgreSQL |
+| `CORTEX_REDIS_PORT` | `6399` | Non-default — avoids conflicts with local Redis |
 | `CORTEX_PG_CONTAINER` | `mem-postgres` | PostgreSQL container name |
 | `CORTEX_REDIS_CONTAINER` | `mem-redis` | Redis container name |
 | `OPENROUTER_API_KEY` | — | For semantic search embeddings (optional) |
+
+**Why non-default ports?** Running Redis on 6399 and PostgreSQL on 5499 prevents silent conflicts with system-installed databases. If you have a local PostgreSQL on 5432, the cortex containers stay isolated.
 
 If `OPENROUTER_API_KEY` is not set, cortex-search falls back to PostgreSQL full-text search. Semantic search is better, but full-text still works.
 
@@ -640,6 +792,24 @@ CORTEX_PROJECT=airport-ops bash scripts/cortex-bootstrap phoenix
 CORTEX_PROJECT=billing-api bash scripts/cortex-bootstrap phoenix
 ```
 
+## Git Worktrees for True Parallel Work
+
+Running 4 agents simultaneously requires more than shared memory — they need isolated working directories so they don't overwrite each other's in-progress changes.
+
+Each agent gets its own git worktree (separate branch, separate directory). The `.agents/` directory is git-tracked and available in all worktrees. All worktrees connect to the same Redis + PostgreSQL instance. Events logged in one worktree are visible in all others via `cortex-bootstrap`.
+
+```bash
+# Create isolated working environment for each agent
+git worktree add ../airport-ops-phoenix sprint-15-phoenix
+git worktree add ../airport-ops-keith sprint-15-keith
+git worktree add ../airport-ops-marvin sprint-15-marvin
+
+# Each agent starts in their own directory — no file conflicts
+# But they all share the same memory, events, and handoffs
+```
+
+The `.agents/` directory (containing cortex scripts, schema, role profiles) is shared via git — changes to it in any worktree are committed back to the repo and available everywhere.
+
 ## What This Is Not
 
 - **Not an agent framework.** This doesn't orchestrate agents or manage workflows. It gives agents memory. What they do with it is up to them (and you).
@@ -664,11 +834,14 @@ Agent Memory is **Piece 1** of [Agent Cortex](https://github.com/amadmalik/agent
 
 This system runs across 6 projects. Here is what we learned the hard way:
 
-1. **Schema drift is the #1 source of bugs.** Projects set up at different times end up with different table schemas. Always re-apply `schema.sql` when updating.
-2. **Every CLI script needs `--help`.** AI agents explore tools by trying `--help` first. If your script doesn't handle it, the agent runs the actual operation by accident.
+1. **Schema drift is the #1 source of bugs.** Projects set up at different times end up with different table schemas. Always re-apply `schema.sql` when updating. The schema is idempotent — safe to run twice.
+2. **Every CLI script needs `--help`.** AI agents explore tools by trying `--help` first. If your script doesn't handle it, the agent runs the actual operation when it was just trying to learn what the tool does.
 3. **PostgreSQL is essential. Redis is optional.** The system degrades gracefully without Redis — queries go directly to PostgreSQL. Without PostgreSQL, nothing works.
-4. **File-based memory doesn't survive the first month.** Markdown files are fine for a solo agent on a weekend project. For anything beyond that, you need a database.
+4. **File-based memory doesn't survive the first month.** Markdown files are fine for a solo agent on a weekend project. For anything beyond that — multiple agents, multiple sprints, production work — you need a database.
 5. **BSD sed on macOS breaks GNU sed scripts.** We use `awk` for all portable text processing. Save yourself the debugging.
+6. **LTM capture changes the ROI calculation.** Manual logging (cortex-log) requires agent discipline. LTM capture requires nothing — the agent just works and the full conversation is captured on exit. After 3 months, the implicit memory layer becomes more valuable than the explicit one.
+7. **PROMI needs to run after every session, not weekly.** We tried batching PROMI's processing runs. Agents that started before PROMI had processed the previous session missed context. Run PROMI after every significant session.
+8. **Config files > one-time prompts.** Anything you want agents to know permanently goes in `AGENTS.md` or their role profile. One-time prompt instructions die with the session.
 
 ## License
 
